@@ -8,6 +8,7 @@ import (
 	"hash/crc32"
 	"io"
 	"log"
+	"net"
 	"os"
 	"os/signal"
 	"strings"
@@ -31,7 +32,7 @@ var (
 	fOutputSetLock = sync.Mutex{}
 )
 
-func nodeLabelsToJson(nd *v1.Node) (string, error) {
+func NodeLabelsToJson(nd *v1.Node) (string, error) {
 	jsonBuf, err := json.Marshal(nd.ObjectMeta.Labels)
 	if err != nil {
 		return "", err
@@ -40,7 +41,7 @@ func nodeLabelsToJson(nd *v1.Node) (string, error) {
 	return string(jsonBuf), nil
 }
 
-func writeToFile(destFile string, content string) error {
+func WriteToFile(destFile string, content string) error {
 	fp, ferr := os.Create(destFile)
 
 	if ferr != nil {
@@ -53,8 +54,36 @@ func writeToFile(destFile string, content string) error {
 	return nil
 }
 
-func processNodeLabels(destFile string, nd *v1.Node) {
-	json, err := nodeLabelsToJson(nd)
+func GetMyFqdn() string {
+	hostname, err := os.Hostname()
+	if err != nil {
+		return "unknown"
+	}
+
+	addrs, err := net.LookupIP(hostname)
+	if err != nil {
+		return hostname
+	}
+
+	for _, addr := range addrs {
+		if ipv4 := addr.To4(); ipv4 != nil {
+			ip, err := ipv4.MarshalText()
+			if err != nil {
+				return hostname
+			}
+			hosts, err := net.LookupAddr(string(ip))
+			if err != nil || len(hosts) == 0 {
+				return hostname
+			}
+			fqdn := hosts[0]
+			return strings.TrimSuffix(fqdn, ".") // return fqdn without trailing dot
+		}
+	}
+	return hostname
+}
+
+func ProcessNodeLabels(destFile string, nd *v1.Node) {
+	json, err := NodeLabelsToJson(nd)
 	if err == nil {
 
 		if destFile == "" {
@@ -81,7 +110,7 @@ func processNodeLabels(destFile string, nd *v1.Node) {
 						newHashInBytes := hash.Sum(nil)[:]
 
 						if bytes.Compare(oldHashInBytes, newHashInBytes) == 0 {
-							fmt.Println("Labels did not changed")
+							log.Println("Labels did not changed")
 							doWrite = false
 						}
 					}
@@ -89,8 +118,8 @@ func processNodeLabels(destFile string, nd *v1.Node) {
 			}
 
 			if doWrite {
-				fmt.Println("Labels need to be written")
-				ferr := writeToFile(destFile, json)
+				log.Println("Labels need to be written")
+				ferr := WriteToFile(destFile, json)
 
 				if ferr != nil {
 					log.Fatalf("Cannot write to file %s: %s", destFile, ferr)
@@ -123,7 +152,18 @@ func main() {
 		log.Fatalf("Bad config file: %s", err)
 	}
 
-	fieldSelector := fields.Set{api.ObjectNameField: string(*nodename)}.AsSelector()
+	ndNameToUse := string(*nodename)
+
+	if ndNameToUse == "" {
+		ndNameToUse = os.Getenv("HOSTNAME")
+		if ndNameToUse == "" {
+			ndNameToUse = GetMyFqdn()
+		}
+	}
+
+	log.Printf("We will watch labels of following node: %s", ndNameToUse)
+
+	fieldSelector := fields.Set{api.ObjectNameField: ndNameToUse}.AsSelector()
 
 	watchlist := cache.NewListWatchFromClient(
 		clientset.CoreV1().RESTClient(),
@@ -137,10 +177,10 @@ func main() {
 		0, //Duration is int64
 		cache.ResourceEventHandlerFuncs{
 			AddFunc: func(obj interface{}) {
-				processNodeLabels(*destfile, obj.(*v1.Node))
+				ProcessNodeLabels(*destfile, obj.(*v1.Node))
 			},
 			UpdateFunc: func(oldObj, newObj interface{}) {
-				processNodeLabels(*destfile, newObj.(*v1.Node))
+				ProcessNodeLabels(*destfile, newObj.(*v1.Node))
 			},
 		},
 	)
