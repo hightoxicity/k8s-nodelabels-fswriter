@@ -1,0 +1,51 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: k8s-nodelabels-fswriter
+  namespace: kube-system
+  labels:
+    k8s-app: k8s-nodelabels-fswriter
+spec:
+  selector:
+    matchLabels:
+      name: k8s-nodelabels-fswriter
+  template:
+    metadata:
+      labels:
+        name: k8s-nodelabels-fswriter
+    spec:
+      serviceAccountName: nodelabels-fswriter
+      hostNetwork: true
+      tolerations:
+        # This taint is set by all kubelets running `--cloud-provider=external`
+        # so we should tolerate it to schedule the calico pods
+        - key: node.cloudprovider.kubernetes.io/uninitialized
+          value: "true"
+          effect: NoSchedule
+        # Allow this pod to run on the master.
+        - key: node-role.kubernetes.io/master
+          effect: NoSchedule
+        # Allow this pod to be rescheduled while the node is in "critical add-ons only" mode.
+        # This, along with the annotation above marks this pod as a critical add-on.
+        - key: CriticalAddonsOnly
+          operator: Exists
+      containers:
+      - name: k8s-nodelabels-fswriter
+        image: djnos/k8s-nodelabels-fswriter:1
+        imagePullPolicy: Always
+        command: ["/k8s-nodelabels-fswriter"]
+        args: ["-o", "/host/labels"]
+        resources:
+          limits:
+            memory: 200Mi
+          requests:
+            cpu: 100m
+            memory: 200Mi
+        volumeMounts:
+        - name: host
+          mountPath: /host
+      terminationGracePeriodSeconds: 30
+      volumes:
+      - name: host
+        hostPath:
+          path: /media/host
